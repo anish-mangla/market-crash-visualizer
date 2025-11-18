@@ -22,3 +22,16 @@ All datasets used in this project are publicly available and were collected from
 - **File:** `data/covid_timeline.csv`  
 - **Source:** Manually compiled from public reports (CDC, WHO, news outlets)  
 - **Purpose:** Used for annotation in visualizations to align market movements with major pandemic events.
+
+### Visualization Designs and Layouts
+1. **Sector Comparison Plot** - Normalized price comparison across all sectors
+2. **Volatility Overlay Plot** - Sector prices with VIX volatility index overlay
+3. **Individual Sector Comparison** - Grid layout showing each sector separately vs SPY
+4. **Correlation Heatmap** - Correlation matrix of daily returns between sectors
+5. **Returns Visualization** - Cumulative percentage returns for each sector
+6. **Unemployment Overlay** - Sector prices with unemployment rate overlay
+7. **Raw Values Plot** - Actual price values (USD) for all sectors
+8. **Summary Statistics** - Bar charts showing max drawdown, total return, and volatility
+9. **View All Visualizations** - Display all visualizations sequentially
+
+This uses the data in /data and (OPTIONAL) user input from the terminal to create specified visualization. 
