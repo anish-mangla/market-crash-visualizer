@@ -35,3 +35,5 @@ All datasets used in this project are publicly available and were collected from
 9. **View All Visualizations** - Display all visualizations sequentially
 
 This uses the data in /data and (OPTIONAL) user input from the terminal to create specified visualization. 
+
+Run the script using `python visualize_sectors.py` and then follow the instructions on the terminal to see the visualizations. 
