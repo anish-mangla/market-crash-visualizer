@@ -74,16 +74,20 @@ def highlight_crash_period(ax, base_date):
 def load_data():
     """Load all sector ETF data, SPY, VIX, COVID timeline, and unemployment data."""
     data = {}
+    volume_data = {}
 
     for ticker in SECTOR_TICKERS.keys():
         df = pd.read_csv(f'data/{ticker}.csv', parse_dates=['Date'], index_col='Date')
         data[ticker] = df['Close']
+        volume_data[ticker] = df['Volume']
 
     spy = pd.read_csv('data/SPY.csv', parse_dates=['Date'], index_col='Date')
     data['SPY'] = spy['Close']
+    volume_data['SPY'] = spy['Volume']
 
     vix = pd.read_csv('data/VIX.csv', parse_dates=['Date'], index_col='Date')
     data['VIX'] = vix['Close']
+    volume_data['VIX'] = vix['Volume']
 
     covid_timeline = pd.read_csv('data/covid_timeline.csv', parse_dates=['Date'])
 
@@ -98,7 +102,8 @@ def load_data():
         unrate = None
 
     df = pd.DataFrame(data).sort_index()
-    return df, covid_timeline, unrate
+    df_volume = pd.DataFrame(volume_data).sort_index()
+    return df, df_volume, covid_timeline, unrate
 
 
 def normalize_prices(df, base_date=None):
@@ -766,6 +771,223 @@ def create_summary_statistics_static(df_normalized, base_date, figsize=(12, 8)):
     return fig, axes
 
 
+def create_volume_analysis_static(df_volume, covid_timeline, figsize=(14, 8)):
+    """Create volume analysis visualization showing trading volume as area chart for each sector."""
+    # Include all sectors + SPY
+    sector_cols = list(SECTOR_TICKERS.keys()) + ['SPY']
+    df_volume_sectors = df_volume[sector_cols]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot area chart for each sector (filled area under line)
+    for ticker in SECTOR_TICKERS.keys():
+        sector_name = SECTOR_TICKERS[ticker]
+        ax.fill_between(
+            df_volume_sectors.index,
+            df_volume_sectors[ticker],
+            alpha=0.6,
+            color=COLORS[ticker],
+            label='',  # Don't label fill_between (creates internal children)
+        )
+        # Add line on top for better visibility - this will have the proper label
+        line = ax.plot(
+            df_volume_sectors.index,
+            df_volume_sectors[ticker],
+            color=COLORS[ticker],
+            linewidth=1.5,
+            alpha=0.9,
+            label=sector_name,  # Set label on the actual line
+        )
+
+    # Add SPY with different style (dashed line, no fill or lighter fill)
+    ax.fill_between(
+        df_volume_sectors.index,
+        df_volume_sectors['SPY'],
+        alpha=0.4,
+        color=COLORS['SPY'],
+        label='',  # Don't label fill_between
+    )
+    ax.plot(
+        df_volume_sectors.index,
+        df_volume_sectors['SPY'],
+        color=COLORS['SPY'],
+        linewidth=2,
+        linestyle='--',
+        alpha=0.9,
+        label='S&P 500 (SPY)',  # Set label on the actual line
+    )
+
+    # Yellow event callouts
+    for _, event in covid_timeline.iterrows():
+        event_date = event['Date']
+        if event_date in df_volume_sectors.index:
+            label = COVID_EVENT_LABELS.get(
+                event_date.strftime('%Y-%m-%d'),
+                event['Event']
+            )
+            ax.axvline(x=event_date, color='red', linestyle=':', alpha=0.5, linewidth=1)
+            ax.text(
+                event_date,
+                ax.get_ylim()[1] * 0.98,
+                label,
+                rotation=90,
+                verticalalignment='top',
+                fontsize=8,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+            )
+
+    start_date = df_volume_sectors.index[0].strftime('%b %Y')
+    end_date = df_volume_sectors.index[-1].strftime('%b %Y')
+
+    # Format y-axis to show values in millions
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M'))
+    
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Trading Volume (millions of shares)', fontsize=12, fontweight='bold')
+    ax.set_title(
+        f'Sector Trading Volume Analysis ({start_date} - {end_date})',
+        fontsize=14,
+        fontweight='bold',
+        pad=20,
+    )
+    ax.legend(
+        loc='center left',
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0.0,
+        framealpha=0.9,
+        fontsize=9,
+    )
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    highlight_crash_period(ax, df_volume_sectors.index[0])
+    format_date_axis(ax, df_volume_sectors.index)
+
+    plt.tight_layout()
+    return fig, ax
+
+
+def create_drawdown_timeline_static(df_normalized, covid_timeline, base_date, figsize=(18, 14)):
+    """Create drawdown timeline visualization with separate subplots for each sector (small multiples)."""
+    sector_cols = list(SECTOR_TICKERS.keys()) + ['SPY']
+    df_sectors = df_normalized[sector_cols]
+    
+    # Calculate drawdown for each sector
+    drawdown_data = {}
+    for ticker in sector_cols:
+        prices = df_sectors[ticker]
+        # Calculate running peak (highest price so far)
+        peak = prices.expanding(min_periods=1).max()
+        # Calculate drawdown: (current - peak) / peak * 100
+        drawdown = ((prices - peak) / peak) * 100
+        drawdown_data[ticker] = drawdown
+    
+    df_drawdown = pd.DataFrame(drawdown_data)
+    
+    # Create subplots: 3 rows x 3 columns (8 sectors + SPY = 9 total)
+    # Use sharex=False to ensure all subplots show their own date labels
+    fig, axes = plt.subplots(3, 3, figsize=figsize, sharex=False, sharey=True, dpi=100)
+    axes = axes.flatten()
+    
+    # Remove the 9th subplot (empty one) - hide it instead of deleting to avoid indexing issues
+    axes[8].set_visible(False)
+    
+    # Convert dates to numeric for bar positioning
+    dates = df_drawdown.index
+    date_nums = mdates.date2num(dates)
+    n_days = len(dates)
+    
+    # Calculate bar width (days between dates)
+    if n_days > 1:
+        day_spacing = (date_nums[-1] - date_nums[0]) / (n_days - 1) if n_days > 1 else 1
+    else:
+        day_spacing = 1
+    bar_width = day_spacing * 0.8  # Each bar takes 80% of available space
+    
+    # Plot each sector in its own subplot
+    for idx, ticker in enumerate(sector_cols):
+        ax = axes[idx]
+        sector_name = SECTOR_TICKERS.get(ticker, 'S&P 500')
+        drawdown_values = df_drawdown[ticker].values
+        
+        # Plot bars extending downward from 0 (drawdowns are negative)
+        if ticker == 'SPY':
+            # SPY with solid, clear style (more visible)
+            ax.bar(
+                date_nums,
+                drawdown_values,  # Negative values, bars go down
+                width=bar_width,
+                label=sector_name,
+                color=COLORS[ticker],
+                alpha=0.6,  # More opaque for better visibility
+                edgecolor=COLORS[ticker],
+                linewidth=4.0,  # Thicker outline
+                linestyle='-',  # Solid line instead of dashed
+            )
+        else:
+            # Regular sectors with outlined bars
+            ax.bar(
+                date_nums,
+                drawdown_values,  # Negative values, bars go down
+                width=bar_width,
+                label=sector_name,
+                color='none',  # Transparent fill (outlined style)
+                edgecolor=COLORS[ticker],
+                linewidth=3.0,
+                alpha=1.0,
+            )
+        
+        # Reference line at 0% (no drawdown) - bold line in middle
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=2.5, alpha=0.9, zorder=10)
+        
+        # Event markers - clean vertical lines on all subplots (no labels)
+        for _, event in covid_timeline.iterrows():
+            event_date = event['Date']
+            if event_date in df_drawdown.index:
+                ax.axvline(x=event_date, color='red', linestyle=':', alpha=0.4, linewidth=1.2, zorder=5)
+        
+        # Set subplot title
+        ax.set_title(sector_name, fontsize=12, fontweight='bold', pad=8)
+        ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.8)
+        
+        # Format y-axis to show negative values clearly
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}%'))
+        
+        # Set y-axis limits - allow both positive and negative values
+        # Positive values extend above 0%, negative values extend below 0%
+        y_min = df_drawdown.min().min() * 1.1  # Most negative value (e.g., -66)
+        y_max = max(df_drawdown.max().max() * 1.1, 5) if df_drawdown.max().max() > 0 else 5  # Allow space for positive values
+        ax.set_ylim(y_min, y_max)  # (-66, 5) -> 0% in middle, negatives below, positives above
+        
+        # Format x-axis on ALL subplots (show dates on all)
+        # Make sure x-axis is visible and formatted
+        ax.tick_params(axis='x', labelsize=9, rotation=45, bottom=True, labelbottom=True)
+        format_date_axis(ax, df_drawdown.index)
+        
+        # Highlight crash period
+        highlight_crash_period(ax, base_date)
+        
+        # Improve tick label clarity
+        ax.tick_params(axis='y', labelsize=9)
+    
+    start_date = df_drawdown.index[0].strftime('%b %Y')
+    end_date = df_drawdown.index[-1].strftime('%b %Y')
+    
+    # Set overall title
+    fig.suptitle(
+        f'Sector Drawdown Timeline ({start_date} - {end_date})',
+        fontsize=18,
+        fontweight='bold',
+        y=0.995,
+    )
+    
+    # Set common labels
+    fig.text(0.5, 0.015, 'Date', ha='center', fontsize=13, fontweight='bold')
+    fig.text(0.015, 0.5, 'Drawdown (%)', va='center', rotation='vertical', fontsize=13, fontweight='bold')
+    
+    plt.tight_layout(rect=[0.025, 0.025, 0.995, 0.99])
+    return fig, axes
+
+
 # ==========================
 # Interactive helpers
 # ==========================
@@ -998,6 +1220,47 @@ def create_summary_statistics(df_normalized, base_date, figsize=(12, 8)):
     return fig, axes
 
 
+def create_volume_analysis(df_volume, covid_timeline, figsize=(14, 8)):
+    fig, ax = create_volume_analysis_static(df_volume, covid_timeline, figsize)
+    
+    # Attach tooltips to lines (area charts have lines on top)
+    # Filter out internal matplotlib child objects (from fill_between)
+    all_lines = ax.get_lines()
+    valid_lines = [ln for ln in all_lines if not ln.get_label().startswith('_child')]
+    
+    # Custom formatter for volume tooltips (show in millions)
+    def volume_formatter(ln, x_val, y_val):
+        label = ln.get_label() or "series"
+        try:
+            x_disp = mdates.num2date(x_val).strftime("%Y-%m-%d")
+        except Exception:
+            x_disp = str(x_val)
+        volume_millions = y_val / 1e6
+        return f"{label}\nDate: {x_disp}\nVolume: {volume_millions:.2f}M shares"
+    
+    _attach_line_tooltips(ax, valid_lines, formatter=volume_formatter)
+    return fig, ax
+
+
+def create_drawdown_timeline(df_normalized, covid_timeline, base_date, figsize=(18, 14)):
+    fig, axes = create_drawdown_timeline_static(df_normalized, covid_timeline, base_date, figsize)
+    
+    # Attach tooltips to bars in each subplot
+    sector_cols = list(SECTOR_TICKERS.keys()) + ['SPY']
+    n_days = len(df_normalized.index)
+    
+    # Only process the 8 subplots (9th was removed)
+    for idx, ax in enumerate(axes[:8]):
+        bars = ax.patches
+        if len(bars) > 0:
+            # Each subplot has bars for one sector, so label them with the sector name
+            sector_name = SECTOR_TICKERS.get(sector_cols[idx], 'S&P 500')
+            bar_labels = [sector_name] * len(bars)
+            _attach_bar_tooltips(ax, bars, bar_labels)
+    
+    return fig, axes
+
+
 # ==========================
 # Menu + main
 # ==========================
@@ -1014,14 +1277,16 @@ def display_menu():
     print("6. Unemployment Overlay")
     print("7. Raw Values Plot")
     print("8. Summary Statistics")
-    print("9. View All Visualizations")
+    print("9. Volume Analysis")
+    print("10. Drawdown Timeline")
+    print("11. View All Visualizations")
     print("0. Exit")
     print("\n" + "="*60)
 
 
 def main():
     print("Loading data...")
-    df, covid_timeline, unrate = load_data()
+    df, df_volume, covid_timeline, unrate = load_data()
 
     print("Normalizing prices...")
     df_normalized, base_date = normalize_prices(df, base_date='2020-01-02')
@@ -1030,7 +1295,7 @@ def main():
 
     while True:
         display_menu()
-        choice = input("\nSelect a visualization (0-9): ")
+        choice = input("\nSelect a visualization (0-11): ")
 
         if choice == '0':
             print("\nExiting visualization tool. Goodbye!")
@@ -1072,47 +1337,63 @@ def main():
             fig, axes = create_summary_statistics(df_normalized, base_date)
             plt.show()
         elif choice == '9':
+            print("\nCreating volume analysis...")
+            fig, ax = create_volume_analysis(df_volume, covid_timeline)
+            plt.show()
+        elif choice == '10':
+            print("\nCreating drawdown timeline...")
+            fig, axes = create_drawdown_timeline(df_normalized, covid_timeline, base_date)
+            plt.show()
+        elif choice == '11':
             print("\nDisplaying all visualizations...")
             print("(Close each window to view the next)")
 
-            print("\n1/8: Sector Comparison Plot...")
+            print("\n1/10: Sector Comparison Plot...")
             fig1, ax1 = create_sector_comparison_plot(df_normalized, covid_timeline, base_date)
             plt.show()
 
-            print("2/8: Volatility Overlay Plot...")
+            print("2/10: Volatility Overlay Plot...")
             fig2, axes2 = create_volatility_overlay_plot(df_normalized, covid_timeline, base_date)
             plt.show()
 
-            print("3/8: Individual Sector Comparison...")
+            print("3/10: Individual Sector Comparison...")
             fig3, axes3 = create_individual_sector_comparison(df_normalized, covid_timeline, base_date)
             plt.show()
 
-            print("4/8: Correlation Heatmap...")
+            print("4/10: Correlation Heatmap...")
             fig4, ax4 = create_correlation_heatmap(df_normalized)
             plt.show()
 
-            print("5/8: Returns Visualization...")
+            print("5/10: Returns Visualization...")
             fig5, ax5 = create_returns_visualization(df_normalized, covid_timeline, base_date)
             plt.show()
 
-            print("6/8: Unemployment Overlay...")
+            print("6/10: Unemployment Overlay...")
             fig6, axes6 = create_unemployment_overlay(df_normalized, unrate, covid_timeline, base_date)
             if fig6 is not None:
                 plt.show()
             else:
                 print("Unemployment data not available.")
 
-            print("7/8: Raw Values Plot...")
+            print("7/10: Raw Values Plot...")
             fig7, ax7 = create_raw_values_plot(df, covid_timeline)
             plt.show()
 
-            print("8/8: Summary Statistics...")
+            print("8/10: Summary Statistics...")
             fig8, axes8 = create_summary_statistics(df_normalized, base_date)
+            plt.show()
+
+            print("9/10: Volume Analysis...")
+            fig9, ax9 = create_volume_analysis(df_volume, covid_timeline)
+            plt.show()
+
+            print("10/10: Drawdown Timeline...")
+            fig10, axes10 = create_drawdown_timeline(df_normalized, covid_timeline, base_date)
             plt.show()
 
             print("\nAll visualizations displayed!")
         else:
-            print("Invalid choice. Please select a number between 0-9.")
+            print("Invalid choice. Please select a number between 0-11.")
 
 
 if __name__ == '__main__':
