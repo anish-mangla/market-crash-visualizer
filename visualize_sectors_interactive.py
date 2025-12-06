@@ -48,6 +48,38 @@ def format_date_axis(ax, dates):
         ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+    
+    # Ensure x-axis limits match the data range (no empty space)
+    if len(dates) > 0:
+        # Get first and last dates, ensuring they're timezone-naive
+        date_start_dt = pd.to_datetime(dates[0])
+        date_end_dt = pd.to_datetime(dates[-1])
+        
+        # Remove timezone if present
+        if hasattr(date_start_dt, 'tz') and date_start_dt.tz is not None:
+            date_start_dt = date_start_dt.tz_localize(None)
+        elif isinstance(date_start_dt, pd.Timestamp) and date_start_dt.tz is not None:
+            date_start_dt = date_start_dt.tz_localize(None)
+        
+        if hasattr(date_end_dt, 'tz') and date_end_dt.tz is not None:
+            date_end_dt = date_end_dt.tz_localize(None)
+        elif isinstance(date_end_dt, pd.Timestamp) and date_end_dt.tz is not None:
+            date_end_dt = date_end_dt.tz_localize(None)
+        
+        # Convert to matplotlib date numbers (suppress nanosecond warnings)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            date_start = mdates.date2num(date_start_dt.to_pydatetime())
+            date_end = mdates.date2num(date_end_dt.to_pydatetime())
+        
+        # Add small padding (1% on each side)
+        date_range = date_end - date_start
+        if date_range > 0:
+            ax.set_xlim(date_start - date_range * 0.01, date_end + date_range * 0.01)
+        else:
+            # Single date or very small range - add 1 day padding
+            ax.set_xlim(date_start - 1, date_end + 1)
 
 
 def highlight_crash_period(ax, base_date):
@@ -192,13 +224,15 @@ def create_sector_comparison_plot_static(df_normalized, covid_timeline, base_dat
         fontweight='bold',
         pad=20,
     )
-    ax.legend(loc='lower left', framealpha=0.9, fontsize=10)
+    # Place legend outside the plot area on the right side
+    ax.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), framealpha=0.9, fontsize=9)
     ax.grid(True, alpha=0.3, linestyle='--')
 
     highlight_crash_period(ax, base_date)
     format_date_axis(ax, df_normalized.index)
 
-    fig.tight_layout()
+    # Adjust layout to accommodate legend outside plot
+    fig.tight_layout(rect=[0, 0, 0.85, 1])
     return fig, ax
 
 
@@ -961,10 +995,37 @@ def create_drawdown_timeline_static(df_normalized, covid_timeline, base_date, fi
         # Format x-axis on ALL subplots (show dates on all)
         # Make sure x-axis is visible and formatted
         ax.tick_params(axis='x', labelsize=9, rotation=45, bottom=True, labelbottom=True)
-        format_date_axis(ax, df_drawdown.index)
+        
+        # Set xlim using the numeric dates that bars are positioned with
+        # This ensures bars are visible and x-axis matches the data range
+        if len(date_nums) > 0:
+            date_range = date_nums[-1] - date_nums[0]
+            if date_range > 0:
+                ax.set_xlim(date_nums[0] - date_range * 0.01, date_nums[-1] + date_range * 0.01)
+            else:
+                ax.set_xlim(date_nums[0] - 1, date_nums[-1] + 1)
+        
+        # Format date axis manually (don't use format_date_axis as it overrides xlim)
+        # Set date formatter and locator based on date range
+        years = pd.DatetimeIndex(df_drawdown.index).year
+        if len(set(years)) > 3:
+            ax.xaxis.set_major_locator(mdates.YearLocator())
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+        else:
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
         
         # Highlight crash period
         highlight_crash_period(ax, base_date)
+        
+        # Re-apply xlim after highlight_crash_period (in case it was reset)
+        if len(date_nums) > 0:
+            date_range = date_nums[-1] - date_nums[0]
+            if date_range > 0:
+                ax.set_xlim(date_nums[0] - date_range * 0.01, date_nums[-1] + date_range * 0.01)
+            else:
+                ax.set_xlim(date_nums[0] - 1, date_nums[-1] + 1)
         
         # Improve tick label clarity
         ax.tick_params(axis='y', labelsize=9)
@@ -1265,10 +1326,12 @@ def create_drawdown_timeline(df_normalized, covid_timeline, base_date, figsize=(
 # Menu + main
 # ==========================
 
-def display_menu():
+def display_menu(current_start_date=None, current_end_date=None):
     print("\n" + "="*60)
     print("SECTOR VISUALIZATION MENU")
     print("="*60)
+    if current_start_date and current_end_date:
+        print(f"📅 Current Date Range: {current_start_date.strftime('%Y-%m-%d')} to {current_end_date.strftime('%Y-%m-%d')}")
     print("\n1. Sector Comparison Plot")
     print("2. Volatility Overlay Plot")
     print("3. Individual Sector Comparison")
@@ -1280,22 +1343,90 @@ def display_menu():
     print("9. Volume Analysis")
     print("10. Drawdown Timeline")
     print("11. View All Visualizations")
+    print("12. Set Date Range")
     print("0. Exit")
     print("\n" + "="*60)
 
 
+def filter_data_by_date_range(df, df_volume, covid_timeline, unrate, start_date, end_date):
+    """Filter all data to the specified date range."""
+    # Filter main price data
+    df_filtered = df[(df.index >= start_date) & (df.index <= end_date)].copy()
+    
+    # Filter volume data
+    df_volume_filtered = df_volume[(df_volume.index >= start_date) & (df_volume.index <= end_date)].copy()
+    
+    # Filter COVID timeline events that fall within range
+    covid_filtered = covid_timeline[
+        (covid_timeline['Date'] >= start_date) & (covid_timeline['Date'] <= end_date)
+    ].copy()
+    
+    # Filter unemployment data if available
+    unrate_filtered = None
+    if unrate is not None:
+        unrate_filtered = unrate[(unrate.index >= start_date) & (unrate.index <= end_date)].copy()
+        if len(unrate_filtered) == 0:
+            unrate_filtered = None
+    
+    return df_filtered, df_volume_filtered, covid_filtered, unrate_filtered
+
+
+def get_date_range_from_user(data_start, data_end):
+    """Prompt user to select a date range."""
+    print(f"\nAvailable data range: {data_start.strftime('%Y-%m-%d')} to {data_end.strftime('%Y-%m-%d')}")
+    print("\nEnter date range (YYYY-MM-DD format, or press Enter to use full range):")
+    
+    start_input = input("Start date (or Enter for beginning): ").strip()
+    end_input = input("End date (or Enter for end): ").strip()
+    
+    try:
+        start_date = pd.to_datetime(start_input) if start_input else data_start
+        end_date = pd.to_datetime(end_input) if end_input else data_end
+        
+        # Validate dates
+        if start_date < data_start:
+            print(f"⚠️  Start date before data range, using {data_start.strftime('%Y-%m-%d')}")
+            start_date = data_start
+        if end_date > data_end:
+            print(f"⚠️  End date after data range, using {data_end.strftime('%Y-%m-%d')}")
+            end_date = data_end
+        if start_date > end_date:
+            print("⚠️  Start date after end date, swapping...")
+            start_date, end_date = end_date, start_date
+        
+        return start_date, end_date
+    except Exception as e:
+        print(f"⚠️  Invalid date format: {e}")
+        print("Using full data range.")
+        return data_start, data_end
+
+
 def main():
     print("Loading data...")
-    df, df_volume, covid_timeline, unrate = load_data()
-
+    df_full, df_volume_full, covid_timeline_full, unrate_full = load_data()
+    
+    # Get full data range
+    data_start = df_full.index[0]
+    data_end = df_full.index[-1]
+    
+    # Initialize with full range
+    start_date = data_start
+    end_date = data_end
+    
+    # Filter data to current range
+    df, df_volume, covid_timeline, unrate = filter_data_by_date_range(
+        df_full, df_volume_full, covid_timeline_full, unrate_full, start_date, end_date
+    )
+    
     print("Normalizing prices...")
-    df_normalized, base_date = normalize_prices(df, base_date='2020-01-02')
-
+    df_normalized, base_date = normalize_prices(df, base_date=None)  # Auto-detect base date
+    
     print(f"Using base date: {pd.to_datetime(base_date).strftime('%Y-%m-%d')}")
+    print(f"Current date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 
     while True:
-        display_menu()
-        choice = input("\nSelect a visualization (0-11): ")
+        display_menu(start_date, end_date)
+        choice = input("\nSelect a visualization (0-12): ")
 
         if choice == '0':
             print("\nExiting visualization tool. Goodbye!")
@@ -1392,8 +1523,32 @@ def main():
             plt.show()
 
             print("\nAll visualizations displayed!")
+        elif choice == '12':
+            print("\n" + "="*60)
+            print("SET DATE RANGE")
+            print("="*60)
+            new_start, new_end = get_date_range_from_user(data_start, data_end)
+            
+            if new_start != start_date or new_end != end_date:
+                start_date = new_start
+                end_date = new_end
+                
+                # Re-filter all data
+                df, df_volume, covid_timeline, unrate = filter_data_by_date_range(
+                    df_full, df_volume_full, covid_timeline_full, unrate_full, start_date, end_date
+                )
+                
+                # Re-normalize with new data
+                df_normalized, base_date = normalize_prices(df, base_date=None)
+                
+                print(f"\n✅ Date range updated!")
+                print(f"   New range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                print(f"   Data points: {len(df)} days")
+                print(f"   Base date: {pd.to_datetime(base_date).strftime('%Y-%m-%d')}")
+            else:
+                print("\nDate range unchanged.")
         else:
-            print("Invalid choice. Please select a number between 0-11.")
+            print("Invalid choice. Please select a number between 0-12.")
 
 
 if __name__ == '__main__':
